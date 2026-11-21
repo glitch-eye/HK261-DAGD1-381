@@ -16,6 +16,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from src.gateway.rules import canonical_path as _canonical_path, match_path_template as _template_match
+
 
 class GatewayDenied(RuntimeError): pass
 
@@ -38,17 +40,6 @@ class GatewayResult:
     request_id: str
     response_body: bytes
     response_headers: dict[str, str]
-
-
-def _canonical_path(path: str) -> str:
-    path = "/" + path.strip("/")
-    return path if path == "/" else path
-
-
-def _template_match(template: str, actual: str) -> bool:
-    # Convert OpenAPI {param} segments to one non-slash segment.
-    rx = re.sub(r"\{[^/{}]+\}", r"[^/]+", _canonical_path(template))
-    return re.fullmatch(rx.rstrip("/") + r"/?", _canonical_path(actual)) is not None
 
 
 class SafetyGateway:
