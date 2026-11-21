@@ -1,19 +1,21 @@
-"""Kill switch support for emergency traffic blocking."""
-
+"""Thread-safe in-process emergency stop for gateway adapters."""
 from __future__ import annotations
-
+import threading
 
 class KillSwitch:
-    """Simple in-memory kill switch for the gateway."""
-
-    def __init__(self) -> None:
-        self.enabled = False
+    """State holder; persistence and remote control belong to adapters."""
+    def __init__(self, enabled: bool = False) -> None:
+        self._enabled = bool(enabled)
+        self._lock = threading.Lock()
 
     def enable(self) -> None:
-        self.enabled = True
+        with self._lock:
+            self._enabled = True
 
     def disable(self) -> None:
-        self.enabled = False
+        with self._lock:
+            self._enabled = False
 
     def is_enabled(self) -> bool:
-        return self.enabled
+        with self._lock:
+            return self._enabled
