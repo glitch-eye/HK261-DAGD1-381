@@ -14,7 +14,11 @@ def decide(request: GatewayRequest, *,
            budget: BudgetTracker | None = None,
            kill_switch: Any | None = None,
            dry_run: bool = False) -> VerdictRecord:
-    """Evaluate a normalized request; never perform network I/O."""
+    """Evaluate a normalized request; never perform network I/O.
+
+    All forwarding paths, including explicitly configured undocumented paths,
+    pass through the same auth, approval, and budget checks.
+    """
     if allowlist is None:
         return _blocked("allowlist_missing")
     policy = config or {}
@@ -32,24 +36,27 @@ def decide(request: GatewayRequest, *,
         undocumented_policy = policy.get("undocumented_policy")
 
     rule = find_matching_rule(request, allowlist)
-    if rule is None:
+    decision_reason = "allowlisted"
+    undocumented = rule is None
+    if undocumented:
         if undocumented_policy == "allow_and_flag":
-            return VerdictRecord(action="forwarded", reason="undocumented",
-                                  tags=tuple(request.tags) + ("undocumented",))
-        if undocumented_policy == "hold":
-            for candidate in policy.get("pre_approved", []):
-                if (str(candidate.get("method", "")).upper() == request.method.upper()
-                        and candidate.get("path") == request.path):
-                    return VerdictRecord(action="forwarded", reason="pre_approved",
-                                          allowlist_rule=candidate.get("id"), tags=request.tags)
-        return _blocked("undocumented_path")
+            decision_reason = "undocumented"
+        elif undocumented_policy == "hold":
+            rule = next((candidate for candidate in policy.get("pre_approved", [])
+                         if str(candidate.get("method", "")).upper() == request.method.upper()
+                         and candidate.get("path") == request.path), None)
+            if rule is None:
+                return _blocked("undocumented_path")
+            decision_reason = "pre_approved"
+        else:
+            return _blocked("undocumented_path")
 
-    rule_id = rule.get("id")
-    if rule.get("auth_required", False):
+    rule_id = rule.get("id") if rule else None
+    if rule and rule.get("auth_required", False):
         headers = {str(k).lower(): v for k, v in request.headers.items()}
         if not headers.get("authorization"):
             return _blocked("authentication_required")
-    if rule.get("execution_mode") == "approval_required" and "approved" not in request.tags:
+    if rule and rule.get("execution_mode") == "approval_required" and "approved" not in request.tags:
         return _blocked("approval_required")
 
     if budget is not None:
@@ -57,12 +64,13 @@ def decide(request: GatewayRequest, *,
         allowed, reason = budget.consume(
             request.run_id, str(rule_id or f"{request.method}:{request.path}"),
             max_requests_per_run=limits.get("max_requests_per_run"),
-            rate_per_second=rule.get("rate_per_second", limits.get("rate_per_second")))
+            rate_per_second=(rule or {}).get("rate_per_second", limits.get("rate_per_second")))
         if not allowed:
             return _blocked(reason)
 
     if dry_run or policy.get("dry_run"):
         return VerdictRecord(action="dry_run", reason="dry_run",
                              allowlist_rule=rule_id, tags=request.tags)
-    return VerdictRecord(action="forwarded", reason="allowlisted",
-                         allowlist_rule=rule_id, tags=request.tags)
+    tags = tuple(request.tags) + (("undocumented",) if undocumented else ())
+    return VerdictRecord(action="forwarded", reason=decision_reason,
+                         allowlist_rule=rule_id, tags=tags)
