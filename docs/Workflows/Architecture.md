@@ -505,3 +505,26 @@ Starting a run is therefore not a side effect of `Store.create_run`; the store n
 - One smoke test calls `main([...])` with `--dry-run`, needing no network, to cover the CLI wiring.
 - Later, an end-to-end test runs against the custom mock lab app with fixture spec and HAR.
 - The leakage rule applies: `cli.py` and `pipeline/` must not import `lab-apps/` or `eval/`; `tests/test_boundaries.py` checks it.
+
+---
+
+## 10. Reusable gateway core and application adapters
+
+The shared `src/gateway/` package is transport-independent. It owns normalized
+request matching, default-deny policy evaluation, request/rate budgets, the
+in-process kill-switch state, and redaction helpers. Its public entry point is
+`src.gateway.engine.decide(request, allowlist=..., config=...)`; it returns a
+`VerdictRecord` and never performs network I/O or writes storage.
+
+Each application owns an adapter that:
+- resolves the actor/session and constructs `GatewayRequest`;
+- supplies its own target scope, generated OpenAPI allowlist, and policy;
+- executes `forwarded`, `blocked`, `dry_run`, or `tunneled` verdicts;
+- persists audit events and manages credentials, transport, and lifecycle.
+
+The shared package must not import `lab-apps/`, load application credentials,
+or read ground-truth/business-state files. The existing custom lab adapter may
+retain lab-only safety restrictions and event schema, while reusing generic
+path matching from `src.gateway.rules`. Migration of its HTTP transport and
+audit persistence is a separate adapter change; do not move those concerns
+into the shared core.
